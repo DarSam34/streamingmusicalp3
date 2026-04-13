@@ -92,6 +92,10 @@ switch ($caso) {
         verificarSesionAjax();
         agregarCancionPlaylist();
         break;
+    case 'validar_skip':
+        verificarSesionAjax();
+        validarSkip();
+        break;
     case 'remover_cancion_playlist':
         verificarSesionAjax();
         removerCancionPlaylist();
@@ -417,10 +421,12 @@ function agregarCancionPlaylist() {
 
 
 function removerCancionPlaylist() {
-    $id_playlist = $_POST['id_playlist'] ?? 0;
-    $id_cancion  = $_POST['id_cancion']  ?? 0;
+    $id_playlist = (int)($_POST['id_playlist'] ?? 0);
+    $id_cancion  = (int)($_POST['id_cancion']  ?? 0);
+    $id_usuario  = (int)$_SESSION['usuario_id']; // Prevención IDOR
+    
     $playlistObj = new Playlist();
-    $result      = $playlistObj->removerCancion($id_playlist, $id_cancion);
+    $result      = $playlistObj->removerCancion($id_playlist, $id_cancion, $id_usuario);
     echo json_encode(['status' => $result ? 'success' : 'error']);
 }
 
@@ -900,6 +906,7 @@ function reordenarCancionPlaylist() {
     $id_playlist = (int)($_POST['id_playlist'] ?? 0);
     $id_cancion  = (int)($_POST['id_cancion']  ?? 0);
     $direccion   = $_POST['direccion'] ?? 'up';
+    $id_usuario  = (int)$_SESSION['usuario_id']; // Prevención IDOR
 
     if ($id_playlist <= 0 || $id_cancion <= 0 || !in_array($direccion, ['up', 'down'])) {
         echo json_encode(['status' => 'error', 'message' => 'Parámetros inválidos.']);
@@ -907,11 +914,43 @@ function reordenarCancionPlaylist() {
     }
 
     $playlistObj = new Playlist();
-    $ok = $playlistObj->reordenarCancion($id_playlist, $id_cancion, $direccion);
+    $ok = $playlistObj->reordenarCancion($id_playlist, $id_cancion, $direccion, $id_usuario);
     echo json_encode([
         'status'  => $ok ? 'success' : 'error',
-        'message' => $ok ? 'Orden actualizado.' : 'No se pudo reordenar (ya está en el extremo).'
+        'message' => $ok ? 'Orden actualizado.' : 'No se pudo reordenar.'
     ]);
+}
+
+// NUEVA FUNCIÓN: Lógica estricta de saltos para cuentas Free
+function validarSkip() {
+    $tipo = (int)($_SESSION['tipo_suscripcion'] ?? 1);
+    if ($tipo == 2) { // Premium
+        echo json_encode(['status' => 'success', 'permitido' => true]);
+        return;
+    }
+
+    if (!isset($_SESSION['skips'])) {
+        $_SESSION['skips'] = [];
+    }
+    
+    $hora_actual = time();
+    // Limpiar saltos que tienen más de 1 hora (3600 segundos)
+    $_SESSION['skips'] = array_filter($_SESSION['skips'], function($timestamp) use ($hora_actual) {
+        return ($hora_actual - $timestamp) <= 3600;
+    });
+
+    if (count($_SESSION['skips']) >= 6) {
+        echo json_encode([
+            'status' => 'error', 
+            'permitido' => false, 
+            'message' => 'Límite de 6 saltos por hora alcanzado. Mejora a Premium para saltos ilimitados.'
+        ]);
+        return;
+    }
+
+    // Registrar nuevo salto
+    $_SESSION['skips'][] = $hora_actual;
+    echo json_encode(['status' => 'success', 'permitido' => true]);
 }
 
 // ==================== PLAYLISTS COLABORATIVAS ====================

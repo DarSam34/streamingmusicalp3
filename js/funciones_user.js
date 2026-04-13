@@ -150,12 +150,64 @@ window.eliminarPlaylist = function(id, nombre) {
     });
 };
 
-window.verPlaylist = function(id) {
-    // Guardar id para reordenamiento
-    window._playlistActualId = id;
 
-    $('#contenido-playlist').html('<div class="text-center py-5"><div class="spinner-border text-primary" role="status"></div><p class="mt-2 text-muted">Cargando pistas...</p></div>');
+
+window.saltarCancionManual = function() {
+    if (!window.esPremium) {
+        $.post('php/queries.php?caso=validar_skip', function(res) {
+            if(res.permitido) {
+                procesarSiguientePista();
+            } else {
+                Swal.fire('Límite Alcanzado', res.message, 'warning');
+            }
+        }, 'json');
+    } else {
+        procesarSiguientePista();
+    }
+};
+
+window.procesarSiguientePista = function() {
+    window.cancionesReproducidasAd++;
+    
+    // Inyección de anuncio cada 4 reproducciones
+    if (!window.esPremium && window.cancionesReproducidasAd >= 4) {
+        window.cancionesReproducidasAd = 0; // Reiniciar contador
+        
+        Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: 'Publicidad...', showConfirmButton: false, timer: 3000});
+        
+        // Pausar UI e inyectar audio de anuncio (asegúrate de que este archivo exista en tu proyecto)
+        const audioAd = new Audio('../assets/audio/ads/premium_ad.mp3');
+        audioAd.play();
+        
+        audioAd.onended = function() {
+            // Continuar con la cola normal al finalizar el anuncio
+            extraerYReproducirSiguienteDeLaCola();
+        };
+    } else {
+        extraerYReproducirSiguienteDeLaCola();
+    }
+};
+
+window.extraerYReproducirSiguienteDeLaCola = function() {
+    if(window.colaReproduccion && window.colaReproduccion.length > 0) {
+        let siguiente = window.colaReproduccion.shift();
+        reproducirCancion(siguiente.PK_id_cancion, siguiente.titulo, siguiente.artista, '../' + siguiente.ruta_archivo_audio);
+    }
+};
+
+
+window.cancionesReproducidasAd = 0;
+
+window.verPlaylist = function(id, idPropietarioPlaylist = null) {
+    window._playlistActualId = id;
+    $('#contenido-playlist').html('<div class="text-center py-5"><div class="spinner-border text-primary" role="status"></div></div>');
     $('#modalVerPlaylist').modal('show');
+
+    // Identificar si la playlist pertenece al usuario en sesión
+    let esPropietario = true; 
+    if(idPropietarioPlaylist !== null && idPropietarioPlaylist !== window.idUsuarioSesion) {
+        esPropietario = false;
+    }
 
     $.ajax({
         url: 'php/queries.php?caso=obtener_canciones_playlist',
@@ -165,84 +217,68 @@ window.verPlaylist = function(id) {
         success: function(resp) {
             if (resp.status === 'success') {
                 if (resp.data.length === 0) {
-                    $('#contenido-playlist').html('<div class="alert alert-info m-4 text-center"><i class="fas fa-compact-disc fa-2x mb-2 d-block"></i>Esta playlist aún está vacía. Ve al catálogo para agregar canciones.</div>');
+                    $('#contenido-playlist').html('<div class="alert alert-info m-4 text-center">Playlist vacía.</div>');
                     return;
                 }
-                // Inyectamos los datos en la vista para poder referenciarlos
                 window.playlistActualData = resp.data;
+
+                // RESTRICCIÓN FRONTEND FREEMIUM: 
+                // Un usuario Free viendo una playlist ajena no puede reproducir canciones a demanda.
+                const forzarModoAleatorio = (!window.esPremium && !esPropietario);
 
                 let html = `
                 <div class="px-3 pt-3 pb-2 text-end bg-light border-bottom">
-                    <button class="btn btn-primary rounded-pill fw-bold shadow-sm" onclick="reproducirPlaylistCompleta()">
-                        <i class="fas fa-play-circle me-1"></i> Reproducir Toda la Playlist
+                    <button class="btn btn-primary rounded-pill fw-bold shadow-sm" onclick="reproducirPlaylistCompleta(${esPropietario})">
+                        <i class="fas ${forzarModoAleatorio ? 'fa-random' : 'fa-play-circle'} me-1"></i> Reproducir ${forzarModoAleatorio ? 'Aleatorio' : 'Toda la Playlist'}
                     </button>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light">
-                            <tr>
-                                <th class="px-3">#</th>
-                                <th>Pista</th>
-                                <th>Duración</th>
-                                <th class="text-center" style="width:90px;" title="Reordenar pista">
-                                    <i class="fas fa-sort text-muted"></i>
-                                </th>
-                                <th class="text-end px-3">Acción</th>
-                            </tr>
-                        </thead>
                         <tbody>`;
 
                 resp.data.forEach(function(c, idx) {
-                    let duracion = Math.floor(c.duracion_segundos / 60) + ':' +
-                                  (c.duracion_segundos % 60).toString().padStart(2, '0');
+                    let duracion = Math.floor(c.duracion_segundos / 60) + ':' + (c.duracion_segundos % 60).toString().padStart(2, '0');
                     let esFirst = (idx === 0);
                     let esLast  = (idx === resp.data.length - 1);
 
-                    html += `<tr id="fila-cancion-${c.PK_id_cancion}">
+                    // Si es free y ajena, el botón de play individual no se renderiza en el DOM
+                    let btnPlayHTML = forzarModoAleatorio ? '' : `
+                        <button class="btn btn-sm btn-success text-white me-1" 
+                            onclick="reproducirCancion(${c.PK_id_cancion}, '${c.titulo.replace(/'/g, "\\'")}', '${c.artista.replace(/'/g, "\\'")}', '../${c.ruta_archivo_audio}')">
+                            <i class="fas fa-play"></i>
+                        </button>`;
+
+                    let controlesReordenHTML = (!esPropietario) ? '' : `
+                        <button class="btn btn-sm btn-outline-secondary px-2 py-0 lh-1" ${esFirst ? 'disabled' : ''} onclick="reordenarCancionEnPlaylist(${id}, ${c.PK_id_cancion}, 'up')"><i class="fas fa-chevron-up"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary px-2 py-0 lh-1" ${esLast ? 'disabled' : ''} onclick="reordenarCancionEnPlaylist(${id}, ${c.PK_id_cancion}, 'down')"><i class="fas fa-chevron-down"></i></button>`;
+                        
+                    let btnBorrarHTML = (!esPropietario) ? '' : `
+                        <button class="btn btn-sm btn-light text-danger rounded-circle" onclick="removerCancionPlaylist(${id}, ${c.PK_id_cancion})"><i class="fas fa-times"></i></button>`;
+
+                    html += `<tr>
                         <td class="text-muted px-3">${idx + 1}</td>
-                        <td>
-                            <div class="fw-bold text-dark">${c.titulo}</div>
-                            <div class="small text-muted">${c.artista}</div>
-                        </td>
+                        <td><div class="fw-bold">${c.titulo}</div><div class="small text-muted">${c.artista}</div></td>
                         <td class="text-muted"><i class="fas fa-clock small me-1"></i> ${duracion}</td>
-                        <td class="text-center">
-                            <div class="d-flex flex-column gap-1 align-items-center">
-                                <button class="btn btn-sm btn-outline-secondary px-2 py-0 lh-1"
-                                        title="Mover arriba"
-                                        ${esFirst ? 'disabled' : ''}
-                                        onclick="reordenarCancionEnPlaylist(${id}, ${c.PK_id_cancion}, 'up')">
-                                    <i class="fas fa-chevron-up"></i>
-                                </button>
-                                <button class="btn btn-sm btn-outline-secondary px-2 py-0 lh-1"
-                                        title="Mover abajo"
-                                        ${esLast ? 'disabled' : ''}
-                                        onclick="reordenarCancionEnPlaylist(${id}, ${c.PK_id_cancion}, 'down')">
-                                    <i class="fas fa-chevron-down"></i>
-                                </button>
-                            </div>
-                        </td>
-                        <td class="text-end px-3">
-                            <button class="btn btn-sm btn-success text-white me-1" 
-                                onclick="reproducirCancion(${c.PK_id_cancion}, '${c.titulo.replace(/'/g, "\\'")}', '${c.artista.replace(/'/g, "\\'")}', '../${c.ruta_archivo_audio}')">
-                                <i class="fas fa-play"></i>
-                            </button>
-                            <button class="btn btn-sm btn-light text-danger rounded-circle" title="Quitar de la lista"
-                                onclick="removerCancionPlaylist(${id}, ${c.PK_id_cancion})">
-                                <i class="fas fa-times"></i>
-                            </button>
-                        </td>
+                        <td class="text-center"><div class="d-flex flex-column gap-1 align-items-center">${controlesReordenHTML}</div></td>
+                        <td class="text-end px-3">${btnPlayHTML} ${btnBorrarHTML}</td>
                     </tr>`;
                 });
 
                 html += '</tbody></table></div>';
                 $('#contenido-playlist').html(html);
             }
-        },
-        error: function() {
-            $('#contenido-playlist').html('<div class="alert alert-danger m-3">Error al cargar las canciones.</div>');
         }
     });
 };
+
+
+
+
+
+
+
+
+
 
 window.reproducirPlaylistCompleta = function(esPropietario = true) {
     if (!window.playlistActualData || window.playlistActualData.length === 0) return;
